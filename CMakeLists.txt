@@ -5,7 +5,21 @@ PROJECT(quicly)
 
 INCLUDE(deps/picotls/cmake/dtrace-utils.cmake)
 
-FIND_PACKAGE(OpenSSL REQUIRED)
+if (EXISTS ${CMAKE_SOURCE_DIR}/../openssl/) 
+    set (OPENSSL_FOUND TRUE)
+    set (OPENSSL_ROOT_DIR "${CMAKE_SOURCE_DIR}/../openssl/")
+    set (OPENSSL_VERSION "1.1.1f")
+    
+    set (OPENSSL_INCLUDE_DIR "${OPENSSL_ROOT_DIR}/include")
+    set (OPENSSL_LIBRARIES "${OPENSSL_ROOT_DIR}")
+    message(STATUS "root: ${OPENSSL_ROOT_DIR}")
+    message(STATUS "OpenSSL_VERSION: ${OPENSSL_VERSION}")
+    message(STATUS "OpenSSL_INCLUDE_DIR: ${OPENSSL_INCLUDE_DIR}")
+    set (OPENSSL_LIBRARIES "${OPENSSL_ROOT_DIR}/libcrypto.so;${OPENSSL_ROOT_DIR}/libssl.so")
+else()
+    message( FATAL_ERROR "OpenSSL Not Found" )
+endif()
+
 IF (OPENSSL_FOUND AND (OPENSSL_VERSION VERSION_LESS "1.0.2"))
     MESSAGE(FATAL "OpenSSL 1.0.2 or above is missing")
 ENDIF ()
