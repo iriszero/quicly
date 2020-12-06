@@ -739,9 +739,6 @@ static int run_server(int fd, struct sockaddr *sa, socklen_t salen)
     signal(SIGINT, on_signal);
     signal(SIGHUP, on_signal);
     
-    profiling_init();
-    profiling_start();
-
     if (bind(fd, sa, salen) != 0) {
         perror("bind(2) failed");
         return 1;
@@ -1465,6 +1462,7 @@ int main(int argc, char **argv)
 #endif
 
     profiling_init();
+	profiling_start();
     int ret = ctx.tls->certificates.count != 0 ? run_server(fd, (void *)&sa, salen) : run_client(fd, (void *)&sa, host);
 
     profiling_stop();
