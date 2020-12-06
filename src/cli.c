@@ -424,8 +424,11 @@ static void send_packets_default(int fd, struct sockaddr *dest, struct iovec *pa
         if (verbosity >= 2)
             hexdump("sendmsg", packets[i].iov_base, packets[i].iov_len);
         int ret;
+
+        profiling_func_start(&profiling_data.quicly_sendmsg);
         while ((ret = (int)sendmsg(fd, &mess, 0)) == -1 && errno == EINTR)
             ;
+        profiling_func_end(&profiling_data.quicly_sendmsg);
         if (ret == -1)
             perror("sendmsg failed");
     }
@@ -604,8 +607,11 @@ static int run_client(int fd, struct sockaddr *sa, const char *host)
                 mess.msg_iov = &vec;
                 mess.msg_iovlen = 1;
                 ssize_t rret;
+
+                profiling_func_start(&profiling_data.quicly_recvmsg);
                 while ((rret = recvmsg(fd, &mess, 0)) == -1 && errno == EINTR)
                     ;
+                profiling_func_end(&profiling_data.quicly_recvmsg);
                 if (rret <= 0)
                     break;
                 if (verbosity >= 2)
@@ -651,6 +657,9 @@ static void on_signal(int signo)
         fprintf(stderr, "conn:%08" PRIu32 ": ", master_id->master_id);
         dump_stats(stderr, conns[i]);
     }
+    
+    profiling_stop();
+    profiling_print_times();
     if (signo == SIGINT)
         _exit(0);
 }
@@ -729,6 +738,9 @@ static int run_server(int fd, struct sockaddr *sa, socklen_t salen)
 {
     signal(SIGINT, on_signal);
     signal(SIGHUP, on_signal);
+    
+    profiling_init();
+    profiling_start();
 
     if (bind(fd, sa, salen) != 0) {
         perror("bind(2) failed");
@@ -738,6 +750,8 @@ static int run_server(int fd, struct sockaddr *sa, socklen_t salen)
     while (1) {
         fd_set readfds;
         struct timeval *tv, tvbuf;
+
+        int ret=0;
         do {
             int64_t timeout_at = INT64_MAX;
             size_t i;
@@ -761,7 +775,15 @@ static int run_server(int fd, struct sockaddr *sa, socklen_t salen)
             }
             FD_ZERO(&readfds);
             FD_SET(fd, &readfds);
-        } while (select(fd + 1, &readfds, NULL, NULL, tv) == -1 && errno == EINTR);
+            profiling_func_start(&profiling_data.quicly_select);
+
+            ret = select(fd + 1, &readfds, NULL, NULL, tv) == -1 && errno == EINTR;
+            profiling_func_end(&profiling_data.quicly_select);
+
+        } while (ret);
+
+
+        profiling_func_start(&profiling_data.quicly_read);
         if (FD_ISSET(fd, &readfds)) {
             while (1) {
                 uint8_t buf[ctx.transport_params.max_udp_payload_size];
@@ -776,17 +798,27 @@ static int run_server(int fd, struct sockaddr *sa, socklen_t salen)
                 mess.msg_iov = &vec;
                 mess.msg_iovlen = 1;
                 ssize_t rret;
+
+                profiling_func_start(&profiling_data.quicly_recvmsg);
+
                 while ((rret = recvmsg(fd, &mess, 0)) == -1 && errno == EINTR)
                     ;
+
+                profiling_func_end(&profiling_data.quicly_recvmsg);
+
                 if (rret == -1)
                     break;
                 if (verbosity >= 2)
                     hexdump("recvmsg", buf, rret);
                 size_t off = 0;
                 while (off != rret) {
+                    profiling_func_start(&profiling_data.quicly_decode_packet);
+
                     quicly_decoded_packet_t packet;
                     if (quicly_decode_packet(&ctx, &packet, buf, rret, &off) == SIZE_MAX)
                         break;
+                    
+                    profiling_func_end(&profiling_data.quicly_decode_packet);
                     if (QUICLY_PACKET_IS_LONG_HEADER(packet.octets.base[0])) {
                         if (packet.version != 0 && !quicly_is_supported_version(packet.version)) {
                             uint8_t payload[ctx.transport_params.max_udp_payload_size];
@@ -811,7 +843,11 @@ static int run_server(int fd, struct sockaddr *sa, socklen_t salen)
                     }
                     if (conn != NULL) {
                         /* existing connection */
+
+                        profiling_func_start(&profiling_data.quicly_receive);
                         quicly_receive(conn, NULL, &remote.sa, &packet);
+                        profiling_func_end(&profiling_data.quicly_receive);
+                        
                     } else if (QUICLY_PACKET_IS_INITIAL(packet.octets.base[0])) {
                         /* long header packet; potentially a new connection */
                         quicly_address_token_plaintext_t *token = NULL, token_buf;
@@ -874,11 +910,20 @@ static int run_server(int fd, struct sockaddr *sa, socklen_t salen)
                 }
             }
         }
+
+        profiling_func_end(&profiling_data.quicly_read);
+
+        profiling_func_start(&profiling_data.quicly_send_pending_wrapper);
         {
             size_t i;
             for (i = 0; i != num_conns; ++i) {
                 if (quicly_get_first_timeout(conns[i]) <= ctx.now->cb(ctx.now)) {
-                    if (send_pending(fd, conns[i]) != 0) {
+                    profiling_func_start(&profiling_data.quicly_send_pending);
+
+                    int ret = send_pending(fd, conns[i]);
+                    profiling_func_end(&profiling_data.quicly_send_pending);
+
+                    if (ret != 0) {
                         dump_stats(stderr, conns[i]);
                         quicly_free(conns[i]);
                         memmove(conns + i, conns + i + 1, (num_conns - i - 1) * sizeof(*conns));
@@ -888,7 +933,9 @@ static int run_server(int fd, struct sockaddr *sa, socklen_t salen)
                 }
             }
         }
+        profiling_func_end(&profiling_data.quicly_send_pending_wrapper);
     }
+    
 }
 
 static void load_session(void)
@@ -1417,5 +1464,10 @@ int main(int argc, char **argv)
     }
 #endif
 
-    return ctx.tls->certificates.count != 0 ? run_server(fd, (void *)&sa, salen) : run_client(fd, (void *)&sa, host);
+    profiling_init();
+    int ret = ctx.tls->certificates.count != 0 ? run_server(fd, (void *)&sa, salen) : run_client(fd, (void *)&sa, host);
+
+    profiling_stop();
+    profiling_print_times();
+    return ret;
 }

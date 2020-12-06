@@ -44,6 +44,7 @@ extern "C" {
 #include "quicly/maxsender.h"
 #include "quicly/cid.h"
 #include "quicly/remote_cid.h"
+#include "quicly/profiling.h"
 
 #ifndef QUICLY_DEBUG
 #define QUICLY_DEBUG 0

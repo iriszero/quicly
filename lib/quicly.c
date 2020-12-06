@@ -2403,6 +2403,8 @@ static int decrypt_packet(ptls_cipher_context_t *header_protection,
                           uint64_t *next_expected_pn, quicly_decoded_packet_t *packet, uint64_t *pn, ptls_iovec_t *payload)
 {
     int ret;
+    
+    profiling_func_start(&profiling_data.decrypt_packet);
 
     /* decrypt ourselves, or use the pre-decrypted input */
     if (packet->decrypted.pn == UINT64_MAX) {
@@ -2441,7 +2443,7 @@ static int decrypt_packet(ptls_cipher_context_t *header_protection,
         fprintf(stderr, "%s: AEAD payload:\n%s", __FUNCTION__, payload_hex);
         free(payload_hex);
     }
-
+    profiling_func_end(&profiling_data.decrypt_packet);
     return 0;
 }
 
@@ -2972,11 +2974,13 @@ static int commit_send_packet(quicly_conn_t *conn, quicly_send_context_t *s, enu
     datagram_size = s->dst - s->payload_buf.datagram;
     assert(datagram_size <= conn->egress.max_udp_payload_size);
 
+    profiling_func_start(&profiling_data.aead_do_encrypt);
     conn->super.ctx->crypto_engine->encrypt_packet(conn->super.ctx->crypto_engine, conn, s->target.cipher->header_protection,
                                                    s->target.cipher->aead, ptls_iovec_init(s->payload_buf.datagram, datagram_size),
                                                    s->target.first_byte_at - s->payload_buf.datagram,
                                                    s->dst_payload_from - s->payload_buf.datagram, conn->egress.packet_number,
                                                    mode == QUICLY_COMMIT_SEND_PACKET_MODE_COALESCED);
+    profiling_func_end(&profiling_data.aead_do_encrypt);
 
     /* update CC, commit sentmap */
     if (s->target.ack_eliciting) {
@@ -3372,6 +3376,8 @@ int quicly_can_send_data(quicly_conn_t *conn, quicly_send_context_t *s)
 
 int quicly_send_stream(quicly_stream_t *stream, quicly_send_context_t *s)
 {
+    profiling_func_start(&profiling_data.quicly_send_stream);
+
     uint64_t off = stream->sendstate.pending.ranges[0].start, end_off;
     quicly_sent_t *sent;
     uint8_t *frame_type_at;
@@ -3413,7 +3419,11 @@ int quicly_send_stream(quicly_stream_t *stream, quicly_send_context_t *s)
             is_fin = 1;
             goto UpdateState;
         }
-        if ((ret = allocate_ack_eliciting_frame(stream->conn, s, hp - header + 1, &sent, on_ack_stream)) != 0)
+        
+        profiling_func_start(&profiling_data.allocate_ack_eliciting_frame);
+        ret = allocate_ack_eliciting_frame(stream->conn, s, hp - header + 1, &sent, on_ack_stream);
+        profiling_func_end(&profiling_data.allocate_ack_eliciting_frame);
+        if (ret != 0)
             return ret;
         frame_type_at = s->dst;
         memcpy(s->dst, header, hp - header);
@@ -3505,7 +3515,8 @@ UpdateState:
     sent->data.stream.stream_id = stream->stream_id;
     sent->data.stream.args.start = off;
     sent->data.stream.args.end = end_off + is_fin;
-
+    
+    profiling_func_end(&profiling_data.quicly_send_stream);
     return 0;
 }
 
@@ -4126,6 +4137,7 @@ static int update_traffic_key_cb(ptls_update_traffic_key_t *self, ptls_t *tls, i
 
 static int do_send(quicly_conn_t *conn, quicly_send_context_t *s)
 {
+    profiling_func_start(&profiling_data.do_send);
     int restrict_sending = 0, ack_only = 0, ret;
     size_t min_packets_to_send = 0;
 
@@ -4330,6 +4342,7 @@ Exit:
         if (s->num_datagrams != 0)
             update_idle_timeout(conn, 0);
     }
+    profiling_func_end(&profiling_data.do_send);
     return ret;
 }
 
@@ -4620,12 +4633,16 @@ static int handle_stream_frame(quicly_conn_t *conn, struct st_quicly_handle_payl
     quicly_stream_t *stream;
     int ret;
 
+    profiling_func_start(&profiling_data.handle_stream_frame);
     if ((ret = quicly_decode_stream_frame(state->frame_type, &state->src, state->end, &frame)) != 0)
         return ret;
     QUICLY_PROBE(QUICTRACE_RECV_STREAM, conn, conn->stash.now, frame.stream_id, frame.offset, frame.data.len, (int)frame.is_fin);
     if ((ret = quicly_get_or_open_stream(conn, frame.stream_id, &stream)) != 0 || stream == NULL)
         return ret;
-    return apply_stream_frame(stream, &frame);
+    ret = apply_stream_frame(stream, &frame);
+    
+    profiling_func_end(&profiling_data.handle_stream_frame);
+    return ret;
 }
 
 static int handle_reset_stream_frame(quicly_conn_t *conn, struct st_quicly_handle_payload_state_t *state)
@@ -4659,6 +4676,7 @@ static int handle_reset_stream_frame(quicly_conn_t *conn, struct st_quicly_handl
 
 static int handle_ack_frame(quicly_conn_t *conn, struct st_quicly_handle_payload_state_t *state)
 {
+    profiling_func_start(&profiling_data.handle_ack_frame);
     quicly_ack_frame_t frame;
     quicly_sentmap_iter_t iter;
     struct {
@@ -4745,8 +4763,10 @@ static int handle_ack_frame(quicly_conn_t *conn, struct st_quicly_handle_payload
         pn_acked += frame.gaps[gap_index];
     }
 
-    if ((ret = on_ack_stream_ack_cached(conn)) != 0)
+    if ((ret = on_ack_stream_ack_cached(conn)) != 0) {
+        profiling_func_end(&profiling_data.handle_ack_frame);
         return ret;
+    }
 
     QUICLY_PROBE(QUICTRACE_RECV_ACK_DELAY, conn, conn->stash.now, frame.ack_delay);
 
@@ -4771,6 +4791,8 @@ static int handle_ack_frame(quicly_conn_t *conn, struct st_quicly_handle_payload
     quicly_loss_detect_loss(&conn->egress.loss, conn->stash.now, conn->super.remote.transport_params.max_ack_delay,
                             conn->initial == NULL && conn->handshake == NULL, on_loss_detected);
     update_loss_alarm(conn, 0);
+
+    profiling_func_end(&profiling_data.handle_ack_frame);
 
     return 0;
 }
@@ -5304,6 +5326,7 @@ static int handle_ack_frequency_frame(quicly_conn_t *conn, struct st_quicly_hand
 static int handle_payload(quicly_conn_t *conn, size_t epoch, const uint8_t *_src, size_t _len, uint64_t *offending_frame_type,
                           int *is_ack_only)
 {
+    profiling_func_start(&profiling_data.handle_payload);
     /* clang-format off */
 
     /* `frame_handlers` is an array of frame handlers and the properties of the frames, indexed by the ID of the frame. */
@@ -5429,6 +5452,8 @@ static int handle_payload(quicly_conn_t *conn, size_t epoch, const uint8_t *_src
     *is_ack_only = num_frames_ack_eliciting == 0;
     if (ret != 0)
         *offending_frame_type = state.frame_type;
+
+    profiling_func_end(&profiling_data.handle_payload);
     return ret;
 }
 

@@ -171,11 +171,13 @@ int quicly_sendbuf_write_vec(quicly_stream_t *stream, quicly_sendbuf_t *sb, quic
 
 void quicly_recvbuf_shift(quicly_stream_t *stream, ptls_buffer_t *rb, size_t delta)
 {
+    profiling_func_start(&profiling_data.quicly_recvbuf_shift);
     assert(delta <= rb->off);
     rb->off -= delta;
     memmove(rb->base, rb->base + delta, rb->off);
 
     quicly_stream_sync_recvbuf(stream, delta);
+    profiling_func_end(&profiling_data.quicly_recvbuf_shift);
 }
 
 ptls_iovec_t quicly_recvbuf_get(quicly_stream_t *stream, ptls_buffer_t *rb)

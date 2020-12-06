@@ -46,7 +46,7 @@ IF(NOT CMAKE_BUILD_TYPE)
 ENDIF(NOT CMAKE_BUILD_TYPE)
 SET(CMAKE_C_FLAGS "-std=c99 -Wall -g ${CC_WARNING_FLAGS} ${CMAKE_C_FLAGS}")
 SET(CMAKE_C_FLAGS_DEBUG "-O0")
-SET(CMAKE_C_FLAGS_RELEASE "-O2")
+SET(CMAKE_C_FLAGS_RELEASE "-Og")
 
 INCLUDE_DIRECTORIES(
     ${OPENSSL_INCLUDE_DIR}
@@ -68,6 +68,7 @@ SET(QUICLY_LIBRARY_FILES
     lib/defaults.c
     lib/local_cid.c
     lib/loss.c
+    lib/profiling.c
     lib/quicly.c
     lib/ranges.c
     lib/recvstate.c
@@ -75,7 +76,8 @@ SET(QUICLY_LIBRARY_FILES
     lib/retire_cid.c
     lib/sendstate.c
     lib/sentmap.c
-    lib/streambuf.c)
+    lib/streambuf.c
+)
 
 SET(UNITTEST_SOURCE_FILES
     deps/picotest/picotest.c
@@ -118,7 +120,7 @@ SET(CLI_FILES ${PICOTLS_OPENSSL_FILES} ${QUICLY_LIBRARY_FILES} src/cli.c embedde
 SET(CLI_COMPILE_FLAGS "-DQUICLY_USE_EMBEDDED_PROBES=1")
 IF (WITH_FUSION)
     LIST(APPEND CLI_FILES deps/picotls/lib/fusion.c)
-    SET(CLI_COMPILE_FLAGS "-mavx2 -maes -mpclmul -DQUICLY_HAVE_FUSION=1 ${CLI_COMPILE_FLAGS}")
+    SET(CLI_COMPILE_FLAGS "-march=native -mpclmul -DQUICLY_HAVE_FUSION=1 ${CLI_COMPILE_FLAGS}")
 ENDIF ()
 ADD_EXECUTABLE(cli ${CLI_FILES})
 SET_TARGET_PROPERTIES(cli PROPERTIES COMPILE_FLAGS ${CLI_COMPILE_FLAGS})
@@ -168,3 +170,5 @@ IF (BUILD_FUZZER)
         TARGET_LINK_LIBRARIES(quicly-fuzzer-packet quicly ${OPENSSL_LIBRARIES} ${CMAKE_DL_LIBS} ${LIB_FUZZER})
     ENDIF(OSS_FUZZ)
 ENDIF()
+
+# add_definitions(-DPROFILING)
